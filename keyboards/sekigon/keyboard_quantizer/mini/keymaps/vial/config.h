@@ -26,3 +26,8 @@
 #define DYNAMIC_KEYMAP_LAYER_COUNT 8
 #define WEAR_LEVELING_BACKING_SIZE (8192 * 2)
 #define WEAR_LEVELING_LOGICAL_SIZE 8192
+
+// Quantizer Mini receives already-debounced key states as USB HID reports.
+// Keep short tap reports (e.g. LT(..., KC_SPACE)) from being filtered by
+// QMK's additional 5 ms matrix debounce on the receiving side.
+#define DEBOUNCE 0
