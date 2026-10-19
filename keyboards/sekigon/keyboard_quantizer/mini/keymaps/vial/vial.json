@@ -15,6 +15,11 @@
       "shortName": "UJ\nOVR"
     },
     {
+      "name": "ENABLE_US_KEY_ON_JP_OS_HALF_WIDTH_ONLY_OVERRIDE",
+      "title": "Enable only half/full-width key on JP OS",
+      "shortName": "UJ\nHW"
+    },
+    {
       "name": "ENABLE_JP_KEY_ON_US_OS_OVERRIDE",
       "title": "Enable JP keyboard on US OS override",
       "shortName": "JU\nOVR"
