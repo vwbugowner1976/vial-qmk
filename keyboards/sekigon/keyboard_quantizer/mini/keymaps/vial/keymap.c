@@ -90,6 +90,9 @@ void keyboard_post_init_user(void) {
         case JP_KEY_US_OS_OVERRIDE_DISABLE:
             register_jp_key_on_us_os_overrides();
             break;
+        case US_KEY_JP_OS_HALF_WIDTH_ONLY_OVERRIDE:
+            register_us_key_on_jp_os_half_width_only_override();
+            break;
     }
 }
 
@@ -146,6 +149,12 @@ bool process_record_user(uint16_t keycode, keyrecord_t *record) {
             case QK_KB_2:
             register_jp_key_on_us_os_overrides();
             user_config.key_os_override = JP_KEY_US_OS_OVERRIDE_DISABLE;
+            eeconfig_update_user(user_config.raw);
+            return false;
+
+            case QK_KB_3:
+            register_us_key_on_jp_os_half_width_only_override();
+            user_config.key_os_override = US_KEY_JP_OS_HALF_WIDTH_ONLY_OVERRIDE;
             eeconfig_update_user(user_config.raw);
             return false;
         }
