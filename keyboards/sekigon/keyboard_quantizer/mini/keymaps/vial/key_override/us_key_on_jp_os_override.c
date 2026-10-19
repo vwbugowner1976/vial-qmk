@@ -1,4 +1,3 @@
-
 #include "keycodes.h"
 #include "keycode_config.h"
 #include "keymap_japanese.h"
@@ -6,7 +5,7 @@
 
 #include "os_key_override.h"
 
-//
+// 
 // Perform as a US keyboard on JP systems
 //
 static const key_override_t *us_key_on_jp_os_overrides[] = {
@@ -32,11 +31,11 @@ static const key_override_t *us_key_on_jp_os_overrides[] = {
     w_shift(KC_QUOT, JP_DQUO),
 };
 
-// If ALT+GRV is pressed, send JP_ZKHK on windows
-// To do this, mask ALT in override config
-static const key_override_t *grv_override_jp_win = {&ko_make_with_layers_and_negmods(0, KC_GRV, JP_GRV, ~0, (uint8_t)MOD_MASK_SHIFT | MOD_MASK_ALT)};
+// On Windows, make KC_GRV send the Japanese half/full-width key
+// without requiring Alt. Ignore Shift so the key remains usable with either Shift state.
+static const key_override_t *grv_override_jp_win = {wo_shift(KC_GRV, JP_GRV)};
 
-// Always override KC_GRV to JP_GRV on Mac
+// On Mac, use the same standalone half/full-width behavior.
 static const key_override_t *grv_override_jp_mac = {wo_shift(KC_GRV, JP_GRV)};
 
 void register_us_key_on_jp_os_overrides(void) {
