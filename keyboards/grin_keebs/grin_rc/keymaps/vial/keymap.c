@@ -450,7 +450,7 @@ void keyboard_post_init_user(void) {
     //debug_matrix=true;
     //debug_keyboard=true;
     //debug_mouse=true;
-    rgb_matrix_mode_noeeprom(RGB_MATRIX_SOLID_COLOR);
+    // Keep the RGB Matrix mode restored from EEPROM instead of forcing solid color at every boot.
 }
 
 void matrix_scan_user(void) {
