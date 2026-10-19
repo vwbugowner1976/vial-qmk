@@ -57,11 +57,12 @@ void register_us_key_on_jp_os_overrides(void) {
  * Do not register the punctuation remaps from us_key_on_jp_os_overrides.
  */
 void register_us_key_on_jp_os_half_width_only_override(void) {
+    // Keep the same US-on-JP punctuation mapping as UJ OVR.
+    // The unshifted KC_GRV is already the Japanese half/full-width key
+    // (JP_ZKHK aliases KC_GRV), so do not override it to JP_GRV.
     remove_all_os_key_overrides();
 
-    if (keymap_config.swap_lalt_lgui) {
-        register_os_key_override(grv_override_jp_mac);
-    } else {
-        register_os_key_override(grv_override_jp_win);
+    for (int idx = 0; idx < sizeof(us_key_on_jp_os_overrides) / sizeof(us_key_on_jp_os_overrides[0]); idx++) {
+        register_os_key_override(us_key_on_jp_os_overrides[idx]);
     }
 }
