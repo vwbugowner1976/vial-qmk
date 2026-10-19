@@ -52,3 +52,17 @@ void register_us_key_on_jp_os_overrides(void) {
         register_os_key_override(grv_override_jp_win);
     }
 }
+
+/*
+ * Only keep the OS-specific half-width/full-width key behavior.
+ * Do not register the punctuation remaps from us_key_on_jp_os_overrides.
+ */
+void register_us_key_on_jp_os_half_width_only_override(void) {
+    remove_all_os_key_overrides();
+
+    if (keymap_config.swap_lalt_lgui) {
+        register_os_key_override(grv_override_jp_mac);
+    } else {
+        register_os_key_override(grv_override_jp_win);
+    }
+}
