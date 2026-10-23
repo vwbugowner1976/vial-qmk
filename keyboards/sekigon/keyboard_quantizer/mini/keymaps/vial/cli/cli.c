@@ -6,6 +6,7 @@
 
 #include "debug.h"
 #include "bootloader.h"
+#include "quantum.h"
 #include "pio_usb_ll.h"
 
 extern void tusb_print_debug_buffer(void);
@@ -29,6 +30,12 @@ static void onVersion(EmbeddedCli *cli, char *args, void *context) {
 
 static void onDfu(EmbeddedCli *cli, char *args, void *context) {
     bootloader_jump();
+}
+
+static void onReset(EmbeddedCli *cli, char *args, void *context) {
+    // Soft reset from the PC side, e.g. when the downstream keyboard is
+    // no longer recognized and cannot send keys anymore.
+    soft_reset_keyboard();
 }
 
 static void onDebug(EmbeddedCli *cli, char *args, void *context) {
@@ -63,6 +70,8 @@ void cli_init(void) {
                                  onPioUsbStatus});
     embeddedCliAddBinding(cli, (CliCommandBinding){"dfu", "jump to bootloader",
                                                    false, NULL, onDfu});
+    embeddedCliAddBinding(cli, (CliCommandBinding){"reset", "soft reset",
+                                                   false, NULL, onReset});
     embeddedCliAddBinding(
         cli, (CliCommandBinding){"debug", "toggle debug option", false, NULL,
                                  onDebug});

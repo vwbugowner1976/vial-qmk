@@ -20,7 +20,15 @@ static volatile uint8_t hid_report_size;
 static uint8_t          hid_instance;
 static bool             hid_disconnect_flag;
 static uint8_t          pre_keyreport[8];
+static volatile bool    hid_mounted_flag;
 #define LED_BLINK_TIME_MS 50
+// Hot-plug recovery: if a device is electrically present on the PIO-USB
+// host port but no HID interface gets mounted (e.g. enumeration stalled
+// after a re-plug), first retry a root port reset, then fall back to a
+// soft reset of the MCU itself. This replaces having to unplug and
+// replug the Quantizer Mini by hand.
+#define KQ_HOST_RECOVERY_DELAY_MS 3000
+#define KQ_HOST_RESET_PULSE_MS 15
 #define KQ_PIN_LED 7
 #define MATRIX_MSBTN_ROW 22
 
@@ -85,6 +93,53 @@ void housekeeping_task_kb(void) {
         }
     }
 
+    // Hot-plug recovery for the downstream USB keyboard.
+    // PIO_USB_ROOT_PORT(0)->connected is set by the core1 frame loop as
+    // soon as a device pulls up D+/D-, before TinyUSB enumeration runs.
+    // If the device is present but enumeration never reaches the HID
+    // mount callback, recover in two stages per connection episode:
+    //   stage 1: re-issue a root port (bus) reset
+    //   stage 2: soft reset the MCU (same effect as replugging the Mini)
+    // Attempts are re-armed when the device is unplugged or mounted, so
+    // an incompatible device cannot cause an endless reset loop.
+    {
+        static uint32_t present_since      = 0;
+        static uint32_t reset_started      = 0;
+        static uint8_t  recovery_stage     = 0;
+        static bool     reset_pulse_active = false;
+
+        if (reset_pulse_active && timer_elapsed32(reset_started) >= KQ_HOST_RESET_PULSE_MS) {
+            pio_usb_host_port_reset_end(0);
+            reset_pulse_active = false;
+        }
+
+        if (hid_mounted_flag) {
+            present_since  = 0;
+            recovery_stage = 0;
+        } else if (PIO_USB_ROOT_PORT(0)->connected) {
+            if (present_since == 0) {
+                present_since = timer_read32();
+                if (present_since == 0) present_since = 1;
+            } else if (recovery_stage < 2 && timer_elapsed32(present_since) >= KQ_HOST_RECOVERY_DELAY_MS) {
+                if (recovery_stage == 0) {
+                    dprintf("KQ host recovery: root port reset\n");
+                    pio_usb_host_port_reset_start(0);
+                    reset_started      = timer_read32();
+                    reset_pulse_active = true;
+                } else {
+                    dprintf("KQ host recovery: soft reset\n");
+                    soft_reset_keyboard();
+                }
+                recovery_stage++;
+                present_since = timer_read32();
+                if (present_since == 0) present_since = 1;
+            }
+        } else {
+            present_since  = 0;
+            recovery_stage = 0;
+        }
+    }
+
     housekeeping_task_user();
 }
 
@@ -119,6 +174,7 @@ void tuh_mount_cb(uint8_t dev_addr) {
 
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_report, uint16_t desc_len) {
     dprintf("HID is mounted:%d:%d\n", dev_addr, instance);
+    hid_mounted_flag = true;
     parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
     tuh_hid_receive_report(dev_addr, instance);
 }
@@ -127,6 +183,7 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
     dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
     memset(pre_keyreport, 0, sizeof(pre_keyreport));
     hid_disconnect_flag = true;
+    hid_mounted_flag    = false;
     kbd_addr            = 0;
     kbd_instance        = 0;
 }
