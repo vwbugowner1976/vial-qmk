@@ -81,6 +81,17 @@ uint32_t kq_dbg_line_state(void) {
     return (uint32_t)pio_usb_bus_get_line_state(PIO_USB_ROOT_PORT(0));
 }
 
+// Partial-mount diagnostics (2026-10-25): a captured failure episode
+// showed a replug where only interface 0 (keyboard) mounted and
+// interfaces 1 (raw HID) and 2 (mouse/consumer) never did, leaving the
+// enumeration stalled mid-way. The gap tracker above cannot see this
+// (any mount counts as mounted), so track the union of mounted bits
+// seen during this connection ("session max") and count episodes
+// where the current mask stays a strict subset of it for over 2 s.
+volatile uint32_t kq_dbg_partial_mount_count;
+volatile uint32_t kq_dbg_last_partial_ms;
+volatile uint32_t kq_dbg_session_max_mask;
+
 uint32_t kq_dbg_suspended(void) {
     // While suspended is true, the PIO-USB frame loop skips its
     // disconnect check entirely (pio_usb_host.c connection_check is
@@ -256,6 +267,38 @@ void housekeeping_task_kb(void) {
         } else {
             unmounted_since = 0;
             episode_stage   = 0;
+        }
+
+        // Partial-mount detection: within one connection, remember
+        // every interface bit that ever mounted. If the current mask
+        // stays a strict subset for over 2 s, an interface that
+        // should be there is missing (stalled enumeration or a
+        // per-interface umount that never recovered).
+        {
+            static uint32_t partial_since   = 0;
+            static bool     partial_counted = false;
+
+            if (connected && any_mounted) {
+                kq_dbg_session_max_mask |= kq_dbg_mounted_mask;
+                if (kq_dbg_mounted_mask != kq_dbg_session_max_mask) {
+                    if (partial_since == 0) {
+                        partial_since = timer_read32();
+                        if (partial_since == 0) partial_since = 1;
+                    } else if (!partial_counted && timer_elapsed32(partial_since) >= 2000) {
+                        kq_dbg_partial_mount_count++;
+                        kq_dbg_last_partial_ms = timer_read32();
+                        partial_counted        = true;
+                        dprintf("KQDBG partial mount: mask=0x%x session_max=0x%x (t=%u)\n", (unsigned)kq_dbg_mounted_mask, (unsigned)kq_dbg_session_max_mask, (unsigned)kq_dbg_last_partial_ms);
+                    }
+                } else {
+                    partial_since   = 0;
+                    partial_counted = false;
+                }
+            } else {
+                kq_dbg_session_max_mask = 0;
+                partial_since           = 0;
+                partial_counted         = false;
+            }
         }
     }
 

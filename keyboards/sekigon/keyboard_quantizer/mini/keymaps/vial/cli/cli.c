@@ -35,6 +35,9 @@ extern volatile uint32_t kq_dbg_last_grv_change_ms;
 uint32_t                 kq_dbg_connected_now(void);
 uint32_t                 kq_dbg_line_state(void);
 uint32_t                 kq_dbg_suspended(void);
+extern volatile uint32_t kq_dbg_partial_mount_count;
+extern volatile uint32_t kq_dbg_last_partial_ms;
+extern volatile uint32_t kq_dbg_session_max_mask;
 uint32_t                 kq_dbg_last_report_nonzero(void);
 uint32_t                 kq_dbg_last_report_grv(void);
 uint32_t                 kq_dbg_matrix_nonzero_now(void);
@@ -71,6 +74,7 @@ static void onReset(EmbeddedCli *cli, char *args, void *context) {
 static void onHostStat(EmbeddedCli *cli, char *args, void *context) {
     printf("connected now: %u (uptime %u ms)\n", (unsigned)kq_dbg_connected_now(), (unsigned)timer_read32());
     printf("root port: line state %u (0=SE0 1=FS idle 2=LS idle 3=SE1), suspended %u\n", (unsigned)kq_dbg_line_state(), (unsigned)kq_dbg_suspended());
+    printf("partial mount episodes (interface missing >2s): %u (last at %u ms); session max mask: 0x%x\n", (unsigned)kq_dbg_partial_mount_count, (unsigned)kq_dbg_last_partial_ms, (unsigned)kq_dbg_session_max_mask);
     printf("mounted mask: 0x%x\n", (unsigned)kq_dbg_mounted_mask);
     printf("dev mounts: %u, hid mounts: %u, hid umounts: %u\n", (unsigned)kq_dbg_dev_mount_count, (unsigned)kq_dbg_hid_mount_count, (unsigned)kq_dbg_hid_umount_count);
     printf("longest connected-but-unmounted gap: %u ms\n", (unsigned)kq_dbg_longest_unmounted_ms);
