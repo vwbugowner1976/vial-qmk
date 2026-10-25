@@ -73,6 +73,22 @@ uint32_t kq_dbg_connected_now(void) {
     return PIO_USB_ROOT_PORT(0)->connected ? 1 : 0;
 }
 
+uint32_t kq_dbg_line_state(void) {
+    // Raw D+/D- state of the root port right now
+    // (PORT_PIN_SE0=0, FS_IDLE=1, LS_IDLE=2, SE1=3; pio_usb_ll.h).
+    // In a phantom-connected state with nothing plugged in, this
+    // should read SE0 while ->connected stays true.
+    return (uint32_t)pio_usb_bus_get_line_state(PIO_USB_ROOT_PORT(0));
+}
+
+uint32_t kq_dbg_suspended(void) {
+    // While suspended is true, the PIO-USB frame loop skips its
+    // disconnect check entirely (pio_usb_host.c connection_check is
+    // the last operand of the SOF condition), so a stale connected
+    // flag can persist.
+    return PIO_USB_ROOT_PORT(0)->suspended ? 1 : 0;
+}
+
 uint32_t kq_dbg_last_report_nonzero(void) {
     for (int i = 0; i < (int)sizeof(kq_dbg_last_kbd_bits); i++) {
         if (kq_dbg_last_kbd_bits[i] != 0) return 1;
