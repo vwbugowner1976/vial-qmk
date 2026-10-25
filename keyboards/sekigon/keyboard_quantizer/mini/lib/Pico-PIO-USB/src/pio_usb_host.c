@@ -213,6 +213,12 @@ void __not_in_flash_func(pio_usb_host_frame)(void) {
   if (!timer_active) {
     return;
   }
+  // KQ root-cause fix: per-port state for connect debounce and for
+  // detecting a port stuck in `suspended` (see below).
+  static uint8_t  connect_stable[PIO_USB_ROOT_PORT_CNT];
+  static uint32_t susp_since[PIO_USB_ROOT_PORT_CNT];
+  static uint32_t frame_no;
+  frame_no++;
   static uint8_t sof_packet[4] = {USB_SYNC, USB_PID_SOF, 0x00, 0x10};
 
   pio_port_t *pp = PIO_USB_PIO_PORT(0);
@@ -283,10 +289,52 @@ void __not_in_flash_func(pio_usb_host_frame)(void) {
     if (root->initialized && !root->connected) {
       port_pin_status_t const line_state = pio_usb_bus_get_line_state(root);
       if (line_state == PORT_PIN_FS_IDLE || line_state == PORT_PIN_LS_IDLE) {
-        root->is_fullspeed = (line_state == PORT_PIN_FS_IDLE);
-        root->connected = true;
-        root->suspended = true; // need a bus reset before operating
-        root->ints |= PIO_USB_INTS_CONNECT_BITS;
+        // KQ root-cause fix: debounce the connect decision. A single
+        // IDLE-looking sample used to be enough to latch `connected`,
+        // so line noise right after a disconnect could create a ghost
+        // connection. Once latched, the ghost could not be cleared:
+        // a fresh connect sets `suspended`, and the disconnect check
+        // is gated on !suspended. Require the pull-up to be present
+        // for several consecutive frames instead.
+        if (++connect_stable[root_idx] >= 3) {
+          connect_stable[root_idx] = 0;
+          root->is_fullspeed       = (line_state == PORT_PIN_FS_IDLE);
+          root->connected          = true;
+          root->suspended          = true; // need a bus reset before operating
+          root->ints |= PIO_USB_INTS_CONNECT_BITS;
+          susp_since[root_idx] = frame_no;
+        }
+      } else {
+        connect_stable[root_idx] = 0;
+      }
+    } else {
+      connect_stable[root_idx] = 0;
+    }
+  }
+
+  // KQ root-cause fix: self-heal a port stuck in `suspended`.
+  // `suspended` is cleared only when the host stack runs a bus reset in
+  // response to the CONNECT interrupt. If that ever fails to happen,
+  // `suspended` stays set forever: SOF/transactions stop and
+  // connection_check() is never reached again (it is gated on
+  // !suspended), so the port can neither operate nor notice a
+  // disconnect, and no new connect can be detected either. A bus
+  // reset takes about 0.5 s, so a port still suspended after 2 s is
+  // wedged, not busy. Force a disconnect then; if the device is
+  // still plugged in, the debounced connect check above re-detects
+  // it and enumeration starts over.
+  for (int root_idx = 0; root_idx < PIO_USB_ROOT_PORT_CNT; root_idx++) {
+    root_port_t *root = PIO_USB_ROOT_PORT(root_idx);
+    if (root->initialized && root->connected && !root->suspended) {
+      susp_since[root_idx] = frame_no;
+    } else if (root->initialized && root->connected && root->suspended &&
+               (frame_no - susp_since[root_idx] > 2000)) {
+      port_pin_status_t const line_state = pio_usb_bus_get_line_state(root);
+      if (line_state != PORT_PIN_SE1) { // SE1 is transient line chatter
+        root->connected = false;
+        // `suspended` stays true, as in connection_check()
+        root->ints |= PIO_USB_INTS_DISCONNECT_BITS;
+        susp_since[root_idx] = frame_no;
       }
     }
   }
