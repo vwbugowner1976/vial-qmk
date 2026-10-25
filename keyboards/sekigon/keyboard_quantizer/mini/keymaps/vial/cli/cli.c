@@ -36,14 +36,9 @@ static void onDebug(EmbeddedCli *cli, char *args, void *context) {
 }
 
 static void onPioUsbStatus(EmbeddedCli *cli, char *args, void *context) {
-    pio_port_t const *pp = PIO_USB_PIO_PORT(0);
-    printf("error rate: %ld / %ld = %f%%\n", pp->total_error_count,
-           pp->total_transaction_count,
-           (float)pp->total_error_count / pp->total_transaction_count * 100);
-    printf(
-        "fatal error rate: %ld / %ld = %f%%\n", pp->total_fatal_error_count,
-        pp->total_transaction_count,
-        (float)pp->total_fatal_error_count / pp->total_transaction_count * 100);
+    // Upstream Pico-PIO-USB removed the error/transaction counters from
+    // pio_port_t, so the error rates can no longer be reported here.
+    printf("piousb: error counters are not available in this Pico-PIO-USB version\n");
 }
 
 void cli_init(void) {
