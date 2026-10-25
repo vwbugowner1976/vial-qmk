@@ -1461,7 +1461,17 @@ static bool enum_new_device(hcd_event_t* event)
     hcd_port_reset_end( _dev0.rhport);
 
     // device unplugged while delaying
-    if ( !hcd_port_connect_status(_dev0.rhport) ) return true;
+    if ( !hcd_port_connect_status(_dev0.rhport) )
+    {
+      // KQ root-cause fix: this enumeration is abandoned, so release
+      // the enumeration lock. Only enum_full_complete() clears
+      // _dev0.enumerating, and it is never reached on this path, so
+      // the flag used to stay set forever: every later attach was
+      // deferred and the port never enumerated again until the MCU
+      // was reset.
+      _dev0.enumerating = 0;
+      return true;
+    }
 
     _dev0.speed = hcd_port_speed_get(_dev0.rhport );
     TU_LOG_USBH("%s Speed\r\n", tu_str_speed[_dev0.speed]);
