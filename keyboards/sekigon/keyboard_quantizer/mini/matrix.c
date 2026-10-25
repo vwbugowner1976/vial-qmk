@@ -20,15 +20,85 @@ static volatile uint8_t hid_report_size;
 static uint8_t          hid_instance;
 static bool             hid_disconnect_flag;
 static uint8_t          pre_keyreport[8];
-static volatile bool    hid_mounted_flag;
+
+// --- Hot-plug diagnostics (log-only; never resets anything) ---
+// The auto-recovery watchdog in cf4fbde misfired on real hardware: the
+// late-plug recovery never engaged and normal typing lost keystrokes
+// (e.g. "nn" for Japanese ん). These counters record the host-side state
+// transitions that watchdog acted on, so the actual behaviour can be
+// observed first. Read them out with the CLI "hoststat" command.
+// Per-instance state is kept as a bitmask because a single bool cannot
+// represent composite devices with several HID interfaces.
+volatile uint32_t kq_dbg_dev_mount_count;
+volatile uint32_t kq_dbg_hid_mount_count;
+volatile uint32_t kq_dbg_hid_umount_count;
+volatile uint32_t kq_dbg_would_stage1_count;
+volatile uint32_t kq_dbg_would_stage2_count;
+volatile uint32_t kq_dbg_longest_unmounted_ms;
+volatile uint32_t kq_dbg_last_stage1_ms;
+volatile uint32_t kq_dbg_last_stage2_ms;
+volatile uint32_t kq_dbg_mounted_mask;  // bit ((dev_addr * 16 + instance) & 31)
+
+// Stuck-key-after-unplug diagnostics (2026-10-25): on real hardware, a
+// key (the half/full-width key, KC_GRV = 0x35) can stay "pressed" on the
+// PC side after the downstream keyboard is unplugged. That happens if
+// the unplug is never turned into a matrix clear, i.e. the umount
+// callback does not run. The counters below record, at the moment the
+// electrical connection drops, whether anything was still mounted and
+// whether the matrix still held keys, and whether keys are STILL in
+// the matrix 1 s after the unplug (no device is left to release them).
+volatile uint32_t kq_dbg_unplug_count;
+volatile uint32_t kq_dbg_unplug_with_mount_count;
+volatile uint32_t kq_dbg_unplug_with_keys_count;
+volatile uint32_t kq_dbg_unplug_grv_count;
+volatile uint32_t kq_dbg_stuck_after_unplug_count;
+volatile uint32_t kq_dbg_last_unplug_ms;
+volatile uint32_t kq_dbg_last_stuck_ms;
+// The user did NOT unplug while holding a key (confirmed 2026-10-25),
+// so a stuck GRV cannot be explained by a release that the device
+// never got to send. These counters track GRV transitions as seen in
+// the reports that actually arrived: if press and release counts
+// differ while the device was still connected, a release report was
+// lost inside the host/pipeline before the unplug. If they match and
+// the matrix is empty at unplug time, the "stuck" impression is not
+// coming from this matrix at all (e.g. PC/IME-side state).
+volatile uint32_t kq_dbg_hid_report_count;
+volatile uint32_t kq_dbg_grv_press_count;
+volatile uint32_t kq_dbg_grv_release_count;
+volatile uint32_t kq_dbg_last_grv_change_ms;
+volatile uint8_t  kq_dbg_last_kbd_bits[32];  // last keyboard report (HID usage bitmap)
+static volatile matrix_row_t kq_dbg_matrix_snapshot[MATRIX_ROWS];
+
+uint32_t kq_dbg_connected_now(void) {
+    return PIO_USB_ROOT_PORT(0)->connected ? 1 : 0;
+}
+
+uint32_t kq_dbg_last_report_nonzero(void) {
+    for (int i = 0; i < (int)sizeof(kq_dbg_last_kbd_bits); i++) {
+        if (kq_dbg_last_kbd_bits[i] != 0) return 1;
+    }
+    return 0;
+}
+
+uint32_t kq_dbg_last_report_grv(void) {
+    // KC_GRV (0x35): bitmap byte 0x35>>3, bit 0x35&7
+    return (kq_dbg_last_kbd_bits[0x35 >> 3] >> (0x35 & 7)) & 1;
+}
+
+uint32_t kq_dbg_matrix_nonzero_now(void) {
+    for (int i = 0; i < MATRIX_ROWS; i++) {
+        if (kq_dbg_matrix_snapshot[i] != 0) return 1;
+    }
+    return 0;
+}
+
+uint32_t kq_dbg_matrix_grv_now(void) {
+    // keyboard_report_hook maps report byte idx to matrix row idx+1,
+    // so KC_GRV lands on row (0x35>>3)+1, col 0x35&7.
+    return (kq_dbg_matrix_snapshot[(0x35 >> 3) + 1] >> (0x35 & 7)) & 1;
+}
+
 #define LED_BLINK_TIME_MS 50
-// Hot-plug recovery: if a device is electrically present on the PIO-USB
-// host port but no HID interface gets mounted (e.g. enumeration stalled
-// after a re-plug), first retry a root port reset, then fall back to a
-// soft reset of the MCU itself. This replaces having to unplug and
-// replug the Quantizer Mini by hand.
-#define KQ_HOST_RECOVERY_DELAY_MS 3000
-#define KQ_HOST_RESET_PULSE_MS 15
 #define KQ_PIN_LED 7
 #define MATRIX_MSBTN_ROW 22
 
@@ -51,6 +121,7 @@ bool matrix_scan_custom(matrix_row_t current_matrix[]) {
                 matrix_has_changed     = true;
                 current_matrix[rowIdx] = 0;
             }
+            kq_dbg_matrix_snapshot[rowIdx] = current_matrix[rowIdx];
         }
 
         hid_disconnect_flag = false;
@@ -93,50 +164,82 @@ void housekeeping_task_kb(void) {
         }
     }
 
-    // Hot-plug recovery for the downstream USB keyboard.
-    // PIO_USB_ROOT_PORT(0)->connected is set by the core1 frame loop as
-    // soon as a device pulls up D+/D-, before TinyUSB enumeration runs.
-    // If the device is present but enumeration never reaches the HID
-    // mount callback, recover in two stages per connection episode:
-    //   stage 1: re-issue a root port (bus) reset
-    //   stage 2: soft reset the MCU (same effect as replugging the Mini)
-    // Attempts are re-armed when the device is unplugged or mounted, so
-    // an incompatible device cannot cause an endless reset loop.
+    // Hot-plug diagnostics: observe only, never intervene. Tracks how
+    // long a device stays electrically connected with no HID interface
+    // mounted, and counts the moments the cf4fbde watchdog WOULD have
+    // fired its stage 1 (root port reset, 3 s) and stage 2 (soft reset,
+    // 6 s). An episode re-arms when something mounts or the device is
+    // unplugged, mirroring the watchdog's logic.
     {
-        static uint32_t present_since      = 0;
-        static uint32_t reset_started      = 0;
-        static uint8_t  recovery_stage     = 0;
-        static bool     reset_pulse_active = false;
+        static uint32_t unmounted_since = 0;
+        static uint8_t  episode_stage   = 0;
+        static bool     prev_connected  = false;
+        static uint32_t unplug_time     = 0;
+        static bool     stuck_armed     = false;
 
-        if (reset_pulse_active && timer_elapsed32(reset_started) >= KQ_HOST_RESET_PULSE_MS) {
-            pio_usb_host_port_reset_end(0);
-            reset_pulse_active = false;
+        bool connected   = PIO_USB_ROOT_PORT(0)->connected;
+        bool any_mounted = (kq_dbg_mounted_mask != 0);
+
+        if (connected != prev_connected) {
+            dprintf("KQDBG connected -> %u (t=%u)\n", connected ? 1 : 0, (unsigned)timer_read32());
+            if (!connected && prev_connected) {
+                // Electrical unplug detected. Record what was still
+                // alive at this moment: if an interface is still marked
+                // mounted, the umount callback has not run (yet), and
+                // if the matrix still holds keys, the PC keeps seeing
+                // them as pressed until something clears the matrix.
+                kq_dbg_unplug_count++;
+                kq_dbg_last_unplug_ms = timer_read32();
+                if (any_mounted) kq_dbg_unplug_with_mount_count++;
+                if (kq_dbg_matrix_nonzero_now()) kq_dbg_unplug_with_keys_count++;
+                if (kq_dbg_matrix_grv_now()) kq_dbg_unplug_grv_count++;
+                dprintf("KQDBG unplug: mask=0x%x matrix_nonzero=%u matrix_grv=%u last_report_nonzero=%u (t=%u)\n", (unsigned)kq_dbg_mounted_mask, (unsigned)kq_dbg_matrix_nonzero_now(), (unsigned)kq_dbg_matrix_grv_now(), (unsigned)kq_dbg_last_report_nonzero(), (unsigned)kq_dbg_last_unplug_ms);
+                unplug_time = kq_dbg_last_unplug_ms;
+                stuck_armed = true;
+            }
+            if (connected) {
+                stuck_armed = false;
+            }
+            prev_connected = connected;
         }
 
-        if (hid_mounted_flag) {
-            present_since  = 0;
-            recovery_stage = 0;
-        } else if (PIO_USB_ROOT_PORT(0)->connected) {
-            if (present_since == 0) {
-                present_since = timer_read32();
-                if (present_since == 0) present_since = 1;
-            } else if (recovery_stage < 2 && timer_elapsed32(present_since) >= KQ_HOST_RECOVERY_DELAY_MS) {
-                if (recovery_stage == 0) {
-                    dprintf("KQ host recovery: root port reset\n");
-                    pio_usb_host_port_reset_start(0);
-                    reset_started      = timer_read32();
-                    reset_pulse_active = true;
-                } else {
-                    dprintf("KQ host recovery: soft reset\n");
-                    soft_reset_keyboard();
+        // 1 s after an unplug, a device that is gone can no longer send
+        // a release report, so any key still in the matrix at that point
+        // is stuck on the PC side unless an umount clear ran meanwhile.
+        if (stuck_armed && !connected && timer_elapsed32(unplug_time) >= 1000) {
+            if (kq_dbg_matrix_nonzero_now()) {
+                kq_dbg_stuck_after_unplug_count++;
+                kq_dbg_last_stuck_ms = timer_read32();
+                dprintf("KQDBG stuck after unplug: matrix still nonzero 1s after unplug, grv=%u (t=%u)\n", (unsigned)kq_dbg_matrix_grv_now(), (unsigned)kq_dbg_last_stuck_ms);
+            }
+            stuck_armed = false;
+        }
+
+        if (connected && !any_mounted) {
+            if (unmounted_since == 0) {
+                unmounted_since = timer_read32();
+                if (unmounted_since == 0) unmounted_since = 1;
+                episode_stage = 0;
+            } else {
+                uint32_t gap = timer_elapsed32(unmounted_since);
+                if (gap > kq_dbg_longest_unmounted_ms) {
+                    kq_dbg_longest_unmounted_ms = gap;
                 }
-                recovery_stage++;
-                present_since = timer_read32();
-                if (present_since == 0) present_since = 1;
+                if (episode_stage == 0 && gap >= 3000) {
+                    kq_dbg_would_stage1_count++;
+                    kq_dbg_last_stage1_ms = timer_read32();
+                    episode_stage         = 1;
+                    dprintf("KQDBG would-be stage1 (port reset) at gap=%u ms\n", (unsigned)gap);
+                } else if (episode_stage == 1 && gap >= 6000) {
+                    kq_dbg_would_stage2_count++;
+                    kq_dbg_last_stage2_ms = timer_read32();
+                    episode_stage         = 2;
+                    dprintf("KQDBG would-be stage2 (soft reset) at gap=%u ms\n", (unsigned)gap);
+                }
             }
         } else {
-            present_since  = 0;
-            recovery_stage = 0;
+            unmounted_since = 0;
+            episode_stage   = 0;
         }
     }
 
@@ -157,6 +260,7 @@ void                 tuh_hid_set_protocol_complete_cb(uint8_t dev_addr, uint8_t 
 }
 
 void tuh_mount_cb(uint8_t dev_addr) {
+    kq_dbg_dev_mount_count++;
     dprintf("USB device is mounted:%d\n", dev_addr);
 
     if (led_count < 0) {
@@ -173,22 +277,25 @@ void tuh_mount_cb(uint8_t dev_addr) {
 }
 
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_report, uint16_t desc_len) {
+    kq_dbg_hid_mount_count++;
+    kq_dbg_mounted_mask |= (1u << (((dev_addr * 16) + instance) & 31));
     dprintf("HID is mounted:%d:%d\n", dev_addr, instance);
-    hid_mounted_flag = true;
     parse_report_descriptor((dev_addr * 16) + instance, desc_report, desc_len);
     tuh_hid_receive_report(dev_addr, instance);
 }
 
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
+    kq_dbg_hid_umount_count++;
+    kq_dbg_mounted_mask &= ~(1u << (((dev_addr * 16) + instance) & 31));
     dprintf("HID unmounted:%d:%d\n", dev_addr, instance);
     memset(pre_keyreport, 0, sizeof(pre_keyreport));
     hid_disconnect_flag = true;
-    hid_mounted_flag    = false;
     kbd_addr            = 0;
     kbd_instance        = 0;
 }
 
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len) {
+    if (len > 0) kq_dbg_hid_report_count++;
     dprintf("Report received\n");
     if (led_count < 0) {
         led_count = timer_read();
@@ -212,6 +319,25 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
 }
 
 __attribute__((weak)) void keyboard_report_hook(keyboard_parse_result_t const* report) {
+    // Diagnostics: keep the latest keyboard report and the matrix state
+    // it produced, so hoststat can show what was held at unplug time.
+    memcpy((void*)kq_dbg_last_kbd_bits, report->bits, sizeof(kq_dbg_last_kbd_bits));
+
+    {
+        static bool prev_grv = false;
+        bool        grv      = ((report->bits[0x35 >> 3] >> (0x35 & 7)) & 1) != 0;
+        if (grv != prev_grv) {
+            if (grv) {
+                kq_dbg_grv_press_count++;
+            } else {
+                kq_dbg_grv_release_count++;
+            }
+            kq_dbg_last_grv_change_ms = timer_read32();
+            dprintf("KQDBG GRV -> %u (t=%u, press=%u release=%u)\n", grv ? 1 : 0, (unsigned)kq_dbg_last_grv_change_ms, (unsigned)kq_dbg_grv_press_count, (unsigned)kq_dbg_grv_release_count);
+            prev_grv = grv;
+        }
+    }
+
     if (debug_enable) {
         uprintf("Keyboard report\n");
         for (int idx = 0; idx < sizeof(report->bits); idx++) {
@@ -227,6 +353,10 @@ __attribute__((weak)) void keyboard_report_hook(keyboard_parse_result_t const* r
     // copy modifier bits
     matrix_dest[0] = report->bits[28];
     matrix_dest[29] = 0;
+
+    for (uint8_t rowIdx = 0; rowIdx < MATRIX_ROWS; rowIdx++) {
+        kq_dbg_matrix_snapshot[rowIdx] = matrix_dest[rowIdx];
+    }
 }
 
 __attribute__((weak)) void mouse_report_hook(mouse_parse_result_t const* report) {

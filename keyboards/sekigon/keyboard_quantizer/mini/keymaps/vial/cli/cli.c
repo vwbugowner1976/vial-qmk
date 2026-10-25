@@ -11,6 +11,33 @@
 
 extern void tusb_print_debug_buffer(void);
 
+// Hot-plug diagnostics counters, defined in mini/matrix.c
+extern volatile uint32_t kq_dbg_dev_mount_count;
+extern volatile uint32_t kq_dbg_hid_mount_count;
+extern volatile uint32_t kq_dbg_hid_umount_count;
+extern volatile uint32_t kq_dbg_would_stage1_count;
+extern volatile uint32_t kq_dbg_would_stage2_count;
+extern volatile uint32_t kq_dbg_longest_unmounted_ms;
+extern volatile uint32_t kq_dbg_last_stage1_ms;
+extern volatile uint32_t kq_dbg_last_stage2_ms;
+extern volatile uint32_t kq_dbg_mounted_mask;
+extern volatile uint32_t kq_dbg_unplug_count;
+extern volatile uint32_t kq_dbg_unplug_with_mount_count;
+extern volatile uint32_t kq_dbg_unplug_with_keys_count;
+extern volatile uint32_t kq_dbg_unplug_grv_count;
+extern volatile uint32_t kq_dbg_stuck_after_unplug_count;
+extern volatile uint32_t kq_dbg_last_unplug_ms;
+extern volatile uint32_t kq_dbg_last_stuck_ms;
+extern volatile uint32_t kq_dbg_hid_report_count;
+extern volatile uint32_t kq_dbg_grv_press_count;
+extern volatile uint32_t kq_dbg_grv_release_count;
+extern volatile uint32_t kq_dbg_last_grv_change_ms;
+uint32_t                 kq_dbg_connected_now(void);
+uint32_t                 kq_dbg_last_report_nonzero(void);
+uint32_t                 kq_dbg_last_report_grv(void);
+uint32_t                 kq_dbg_matrix_nonzero_now(void);
+uint32_t                 kq_dbg_matrix_grv_now(void);
+
 #define CLI_BUFFER_SIZE 1024
 static CLI_UINT           cliBuffer[BYTES_TO_CLI_UINTS(CLI_BUFFER_SIZE)];
 static EmbeddedCli       *cli             = NULL;
@@ -33,9 +60,23 @@ static void onDfu(EmbeddedCli *cli, char *args, void *context) {
 }
 
 static void onReset(EmbeddedCli *cli, char *args, void *context) {
-    // Soft reset from the PC side, e.g. when the downstream keyboard is
-    // no longer recognized and cannot send keys anymore.
+    // Manual soft reset from the PC side, e.g. when the downstream
+    // keyboard is no longer recognized. Only runs when typed here;
+    // nothing is reset automatically in this diagnostic build.
     soft_reset_keyboard();
+}
+
+static void onHostStat(EmbeddedCli *cli, char *args, void *context) {
+    printf("connected now: %u (uptime %u ms)\n", (unsigned)kq_dbg_connected_now(), (unsigned)timer_read32());
+    printf("mounted mask: 0x%x\n", (unsigned)kq_dbg_mounted_mask);
+    printf("dev mounts: %u, hid mounts: %u, hid umounts: %u\n", (unsigned)kq_dbg_dev_mount_count, (unsigned)kq_dbg_hid_mount_count, (unsigned)kq_dbg_hid_umount_count);
+    printf("longest connected-but-unmounted gap: %u ms\n", (unsigned)kq_dbg_longest_unmounted_ms);
+    printf("would-be stage1 (port reset @3s): %u (last at %u ms)\n", (unsigned)kq_dbg_would_stage1_count, (unsigned)kq_dbg_last_stage1_ms);
+    printf("would-be stage2 (soft reset @6s): %u (last at %u ms)\n", (unsigned)kq_dbg_would_stage2_count, (unsigned)kq_dbg_last_stage2_ms);
+    printf("unplugs: %u (last at %u ms), still mounted at unplug: %u, matrix held keys at unplug: %u, matrix held GRV (hankaku/zenkaku) at unplug: %u\n", (unsigned)kq_dbg_unplug_count, (unsigned)kq_dbg_last_unplug_ms, (unsigned)kq_dbg_unplug_with_mount_count, (unsigned)kq_dbg_unplug_with_keys_count, (unsigned)kq_dbg_unplug_grv_count);
+    printf("stuck after unplug (matrix still nonzero 1s later): %u (last at %u ms)\n", (unsigned)kq_dbg_stuck_after_unplug_count, (unsigned)kq_dbg_last_stuck_ms);
+    printf("matrix now: nonzero %u, GRV %u; last kbd report: nonzero %u, GRV %u\n", (unsigned)kq_dbg_matrix_nonzero_now(), (unsigned)kq_dbg_matrix_grv_now(), (unsigned)kq_dbg_last_report_nonzero(), (unsigned)kq_dbg_last_report_grv());
+    printf("hid reports received: %u; GRV press/release in reports: %u/%u (last GRV change at %u ms)\n", (unsigned)kq_dbg_hid_report_count, (unsigned)kq_dbg_grv_press_count, (unsigned)kq_dbg_grv_release_count, (unsigned)kq_dbg_last_grv_change_ms);
 }
 
 static void onDebug(EmbeddedCli *cli, char *args, void *context) {
@@ -72,6 +113,9 @@ void cli_init(void) {
                                                    false, NULL, onDfu});
     embeddedCliAddBinding(cli, (CliCommandBinding){"reset", "soft reset",
                                                    false, NULL, onReset});
+    embeddedCliAddBinding(
+        cli, (CliCommandBinding){"hoststat", "show downstream host diagnostics",
+                                 false, NULL, onHostStat});
     embeddedCliAddBinding(
         cli, (CliCommandBinding){"debug", "toggle debug option", false, NULL,
                                  onDebug});
