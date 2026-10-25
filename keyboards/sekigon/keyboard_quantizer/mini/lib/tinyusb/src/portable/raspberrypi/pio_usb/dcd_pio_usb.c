@@ -50,12 +50,13 @@ static usb_descriptor_buffers_t desc;
  *------------------------------------------------------------------*/
 
 // Initialize controller to device mode
-void dcd_init (uint8_t rhport)
-{
+bool dcd_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
   (void) rhport;
-
+  (void) rh_init;
   static pio_usb_configuration_t config = PIO_USB_DEFAULT_CONFIG;
   usb_device = pio_usb_device_init(&config, &desc);
+
+  return true;
 }
 
 // Enable device interrupt
@@ -110,6 +111,19 @@ bool dcd_edpt_open (uint8_t rhport, tusb_desc_endpoint_t const * desc_ep)
 void dcd_edpt_close_all (uint8_t rhport)
 {
   (void) rhport;
+}
+
+bool dcd_edpt_iso_alloc(uint8_t rhport, uint8_t ep_addr, uint16_t largest_packet_size) {
+  (void)rhport;
+  (void)ep_addr;
+  (void)largest_packet_size;
+  return false;
+}
+
+bool dcd_edpt_iso_activate(uint8_t rhport, const tusb_desc_endpoint_t *desc_ep) {
+  (void)rhport;
+  (void)desc_ep;
+  return false;
 }
 
 // Submit a transfer, When complete dcd_event_xfer_complete() is invoked to notify the stack
@@ -206,5 +220,4 @@ void __no_inline_not_in_flash_func(pio_usb_device_irq_handler)(uint8_t root_id)
   // clear all
   rport->ints &= ~ints;
 }
-
 #endif
