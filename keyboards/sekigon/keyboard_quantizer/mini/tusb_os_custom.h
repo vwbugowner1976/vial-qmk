@@ -35,6 +35,26 @@ void osal_task_delay(uint32_t msec);
 osal_mutex_t osal_mutex_create(osal_mutex_def_t* mdef);
 bool osal_mutex_lock (osal_mutex_t mutex_hdl, uint32_t msec);
 bool osal_mutex_unlock(osal_mutex_t mutex_hdl);
+bool osal_mutex_delete(osal_mutex_t mutex_hdl);
+
+//--------------------------------------------------------------------+
+// SPINLOCK API (required by TinyUSB 0.20 usbh)
+//--------------------------------------------------------------------+
+// Implemented on top of the ChibiOS system lock, like the mutex above.
+// interrupt_set is stored for OSAL_SPINLOCK_DEF compatibility but is
+// not used: the system lock already masks the kernel interrupts that
+// can reach the host stack on this port.
+typedef struct {
+    void (*interrupt_set)(bool enabled);
+    uint32_t nested_count;
+} osal_spinlock_t;
+
+#define OSAL_SPINLOCK_DEF(_name, _int_set) \
+  osal_spinlock_t _name = { .interrupt_set = _int_set, .nested_count = 0 }
+
+void osal_spin_init(osal_spinlock_t *ctx);
+void osal_spin_lock(osal_spinlock_t *ctx, bool in_isr);
+void osal_spin_unlock(osal_spinlock_t *ctx, bool in_isr);
 
 //--------------------------------------------------------------------+
 // QUEUE API
@@ -112,6 +132,12 @@ TU_ATTR_ALWAYS_INLINE static inline bool osal_queue_empty(osal_queue_t qhdl)
   // Skip queue lock/unlock since this function is primarily called
   // with interrupt disabled before going into low power mode
   return tu_fifo_empty(&qhdl->ff);
+}
+
+TU_ATTR_ALWAYS_INLINE static inline bool osal_queue_delete(osal_queue_t qhdl)
+{
+  (void) qhdl; // nothing to release: the fifo storage is static
+  return true;
 }
 #ifdef __cplusplus
  }

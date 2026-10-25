@@ -24,6 +24,40 @@ osal_mutex_t osal_mutex_create(osal_mutex_def_t *mdef) {
     return mdef;
 }
 
+bool osal_mutex_delete(osal_mutex_t mutex_hdl) {
+    (void) mutex_hdl; // mutexes are dummies backed by the system lock
+    return true;
+}
+
+void osal_spin_init(osal_spinlock_t *ctx) {
+    ctx->nested_count = 0;
+}
+
+void osal_spin_lock(osal_spinlock_t *ctx, bool in_isr) {
+    if (ctx->nested_count == 0) {
+        if (in_isr) {
+            chSysLockFromISR();
+        } else {
+            chSysLock();
+        }
+    }
+    ctx->nested_count++;
+}
+
+void osal_spin_unlock(osal_spinlock_t *ctx, bool in_isr) {
+    if (ctx->nested_count == 0) {
+        return;
+    }
+    ctx->nested_count--;
+    if (ctx->nested_count == 0) {
+        if (in_isr) {
+            chSysUnlockFromISR();
+        } else {
+            chSysUnlock();
+        }
+    }
+}
+
 #include <stdio.h>
 #include <stdarg.h>
 
