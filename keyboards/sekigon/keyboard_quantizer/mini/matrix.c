@@ -302,14 +302,16 @@ void housekeeping_task_kb(void) {
         }
     }
 
-    // KQDBG periodic status dump (every 5 s, observe-only). Keeps a live
-    // signature in the log even if the CLI later becomes unresponsive.
+    // KQDBG periodic status dump (every 5 s, observe-only). Uses dprintf so
+    // it only emits after the `debug` CLI command enables debug output (i.e.
+    // while a logger is attached and draining the console); it never emits
+    // into an undrained console during normal use.
     {
         static uint32_t last_stat_ms = 0;
         uint32_t        now_ms       = timer_read32();
         if (now_ms - last_stat_ms >= 5000) {
             last_stat_ms = now_ms;
-            uprintf("KQDBG stat: t=%u conn=%u line=%u susp=%u mask=0x%x smax=0x%x dev=%u hid=%u umt=%u partial=%u reports=%u grv=%u/%u\n", (unsigned)now_ms, (unsigned)(PIO_USB_ROOT_PORT(0)->connected ? 1 : 0), (unsigned)pio_usb_bus_get_line_state(0), (unsigned)(PIO_USB_ROOT_PORT(0)->suspended ? 1 : 0), (unsigned)kq_dbg_mounted_mask, (unsigned)kq_dbg_session_max_mask, (unsigned)kq_dbg_dev_mount_count, (unsigned)kq_dbg_hid_mount_count, (unsigned)kq_dbg_hid_umount_count, (unsigned)kq_dbg_partial_mount_count, (unsigned)kq_dbg_hid_report_count, (unsigned)kq_dbg_grv_press_count, (unsigned)kq_dbg_grv_release_count);
+            dprintf("KQDBG stat: t=%u conn=%u line=%u susp=%u mask=0x%x smax=0x%x dev=%u hid=%u umt=%u partial=%u reports=%u grv=%u/%u\n", (unsigned)now_ms, (unsigned)(PIO_USB_ROOT_PORT(0)->connected ? 1 : 0), (unsigned)pio_usb_bus_get_line_state(0), (unsigned)(PIO_USB_ROOT_PORT(0)->suspended ? 1 : 0), (unsigned)kq_dbg_mounted_mask, (unsigned)kq_dbg_session_max_mask, (unsigned)kq_dbg_dev_mount_count, (unsigned)kq_dbg_hid_mount_count, (unsigned)kq_dbg_hid_umount_count, (unsigned)kq_dbg_partial_mount_count, (unsigned)kq_dbg_hid_report_count, (unsigned)kq_dbg_grv_press_count, (unsigned)kq_dbg_grv_release_count);
         }
     }
 
