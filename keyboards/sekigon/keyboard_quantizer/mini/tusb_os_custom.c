@@ -24,6 +24,7 @@ osal_mutex_t osal_mutex_create(osal_mutex_def_t *mdef) {
     return mdef;
 }
 
+#include <stdio.h>
 #include <stdarg.h>
 
 static char     debug_buffer[(1 << 12)];
